@@ -4,11 +4,12 @@ st.set_page_config(page_title="Моё первое приложение Zorojan"
 
 st.title("Привет от Streamlit, Zorojan!")
 st.write("Это простое приложение, развернутое из GitHub.")
-st.write("---") # Новая строка для разделения
-st.write("Я обновил это приложение!") # Новая строка
-st.write("---") # Еще одна новая строка для разделения
+st.write("---")
+st.write("Я обновил это приложение!")
+st.write("---")
+st.success("Успешно обновлено через Colab и GitHub!") # Новая строка
 
-user_name = st.text_input("Как вас зовут????")
+user_name = st.text_input("Как вас зовут?")
 if user_name:
     st.write(f"Приятно познакомиться, {user_name}!")
 
