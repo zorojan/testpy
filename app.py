@@ -9,7 +9,7 @@ st.write("Я обновил это приложение!")
 st.write("---")
 st.success("Успешно обновлено через Colab и GitHub!") # Новая строка
 
-user_name = st.text_input("Как вас зовут???")
+user_name = st.text_input("Как вас зовут++")
 if user_name:
     st.write(f"Приятно познакомиться, {user_name}!")
 
