@@ -16,7 +16,8 @@ except Exception as e:
 
 # Инициализируем модель Gemini
 try:
-    model = genai.GenerativeModel('gemini-pro') # Используйте модель, подходящую для ваших задач
+    # Использование модели, которая поддерживает generateContent
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
 except Exception as e:
     st.error(f"Ошибка инициализации модели Gemini: {e}")
     st.stop()
