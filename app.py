@@ -1,129 +1,98 @@
 import streamlit as st
 import pandas as pd
 import os
+from matching import perform_header_matching_and_grouping # Import the matching function
 
-# Import functions from the new module files
-from ingestion import load_data
-from matching import perform_header_matching_and_grouping
-from merging import perform_merging
-from standardization import perform_standardization
+# Set page configuration
+st.set_page_config(layout="wide")
 
-st.title('Price List Matching and Standardization')
-st.write('Upload your price lists to start the process.')
+# --- Step 1: Data Upload ---
+st.sidebar.header("Step 1: Data Upload")
 
-# Initialize session state variables if not already present
-if 'step' not in st.session_state:
-    st.session_state.step = 1
+# Initialize session state for dataframes if not already present
 if 'loaded_dataframes' not in st.session_state:
     st.session_state.loaded_dataframes = {}
-if 'grouped_header_matches' not in st.session_state:
-    st.session_state.grouped_header_matches = []
-if 'confirmed_column_mappings' not in st.session_state:
-    st.session_state.confirmed_column_mappings = {} # Store confirmed mappings
-if 'merged_dataframe' not in st.session_state:
-    st.session_state.merged_dataframe = None
-if 'standardized_dataframe' not in st.session_state:
-    st.session_state.standardized_dataframe = None
 
-# Define the total number of steps
-TOTAL_STEPS = 5
+# Add a flag to check if example data has been loaded
+if 'example_data_loaded' not in st.session_state:
+    st.session_state.example_data_loaded = False
 
-# --- Wizard Steps ---
-
-if st.session_state.step == 1:
-    st.header("Step 1: Data Ingestion")
-    # Call the load_data function from the ingestion module
-    load_data() # This function updates st.session_state.loaded_dataframes
-
-elif st.session_state.step == 2:
-    st.header("Step 2: Column Header Matching and Grouping")
-    if st.session_state.loaded_dataframes:
-        # Call the perform_header_matching_and_grouping function
-        perform_header_matching_and_grouping() # This function updates st.session_state.grouped_header_matches and confirmed_column_mappings
-    else:
-        st.info("Please go back to Step 1 to upload data.")
+# --- Load Example Data (run only once) ---
+# Check if no dataframes are loaded AND example data hasn't been loaded yet
+if not st.session_state.loaded_dataframes and not st.session_state.example_data_loaded:
+    st.write("Loading example data...")
+    try:
+        # Assuming df1, df2, df3 DataFrames are defined in a previous cell and available
+        st.session_state.loaded_dataframes['Source 1'] = df1
+        st.session_state.loaded_dataframes['Source 2'] = df2
+        st.session_state.loaded_dataframes['Source 3'] = df3
+        st.session_state.example_data_loaded = True # Set flag to True after loading
+        st.write("Example data loaded successfully.")
+        # Rerun to update the UI with loaded data
+        st.experimental_rerun()
+    except NameError:
+        st.warning("Example DataFrames (df1, df2, df3) not found. Please run the cell that defines them.")
+    except Exception as e:
+         st.error(f"An error occurred while loading example data: {e}")
 
 
-elif st.session_state.step == 3:
-    st.header("Step 3: Data Merging")
-    # Check if confirmed column mappings exist before displaying merging options
-    if st.session_state.get('confirmed_column_mappings', {}): # Check if confirmed_column_mappings is not empty
-        # Call the perform_merging function
-        perform_merging() # This function updates st.session_state.merged_dataframe
-    elif st.session_state.get('grouped_header_matches', []):
-         st.info("Please select headers in Step 2 and confirm the mappings.")
-    elif st.session_state.get('loaded_dataframes', {}):
-        st.info("Please go back to Step 2 to perform Column Header Matching and Grouping.")
-    else:
-        st.info("Please go back to Step 1 to upload data.")
+uploaded_files = st.sidebar.file_uploader("Upload CSV, Excel, or JSON files", type=["csv", "xlsx", "xls", "json"], accept_multiple_files=True)
+
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        file_name = uploaded_file.name
+        # Check if the file is already loaded to avoid duplicates
+        if file_name not in st.session_state.loaded_dataframes:
+            try:
+                if file_name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                elif file_name.endswith(('.xlsx', '.xls')):
+                    df = pd.read_excel(uploaded_file)
+                elif file_name.endswith('.json'):
+                    df = pd.read_json(uploaded_file)
+
+                st.session_state.loaded_dataframes[file_name] = df
+                st.sidebar.success(f"Loaded {file_name}")
+                # Clear example data flag if user uploads their own data
+                st.session_state.example_data_loaded = False
+                # Rerun to update the display with the new dataframe
+                st.experimental_rerun()
+
+            except Exception as e:
+                st.sidebar.error(f"Error loading {file_name}: {e}")
+        else:
+            st.sidebar.info(f"{file_name} is already loaded.")
+
+# Display loaded dataframes
+if st.session_state.loaded_dataframes:
+    st.sidebar.subheader("Loaded Dataframes")
+    for file_name, df in st.session_state.loaded_dataframes.items():
+        st.sidebar.write(f"- {file_name}")
+        # Optional: Display head of each dataframe in the main area or an expander
+        # with st.expander(f"Preview: {file_name}"):
+        #      st.dataframe(df.head())
+else:
+     st.sidebar.info("No dataframes loaded yet.")
+
+# --- Step 2: Column Header Matching and Grouping ---
+st.sidebar.header("Step 2: Column Matching")
+
+# Call the matching function from matching.py
+# This function now contains the UI and logic for matching
+perform_header_matching_and_grouping()
 
 
-elif st.session_state.step == 4:
-    st.header("Step 4: Data Standardization")
-    # Check if a merged dataframe exists before displaying standardization options
-    if st.session_state.merged_dataframe is not None:
-        # Call the perform_standardization function
-        # This function now accesses merged_dataframe from session state
-        perform_standardization() # This function updates st.session_state.standardized_dataframe
-    elif st.session_state.get('confirmed_column_mappings', {}):
-         st.info("Please perform Data Merging in Step 3 first.")
-    elif st.session_state.get('grouped_header_matches', []):
-         st.info("Please go back to Step 2 and confirm header mappings, then perform merging in Step 3.")
-    elif st.session_state.get('loaded_dataframes', {}):
-         st.info("Please go back to Step 2 to perform Column Header Matching and Grouping.")
-    else:
-        st.info("Please go back to Step 1 to upload data.")
+# --- Step 3: Data Merging (Placeholder) ---
+st.sidebar.header("Step 3: Data Merging")
+st.write("Data Merging functionality will be implemented here based on confirmed mappings.")
+# This section will be developed later to use st.session_state.confirmed_column_mappings
 
+# --- Step 4: Data Cleaning and Transformation (Placeholder) ---
+st.sidebar.header("Step 4: Cleaning & Transformation")
+st.write("Data Cleaning and Transformation functionality will be implemented here.")
+# This section will be developed later
 
-elif st.session_state.step == 5:
-    st.header("Step 5: Final Result")
-    # Check if standardized data exists to display the final result
-    if st.session_state.standardized_dataframe is not None:
-        st.write("Here is the final standardized and merged data.")
-        st.dataframe(st.session_state.standardized_dataframe)
-
-        # Allow downloading the final results
-        csv_output_final = st.session_state.standardized_dataframe.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Final Standardized and Merged Results as CSV",
-            data=csv_output_final,
-            file_name=f"final_standardized_merged_results.csv",
-            mime="text/csv",
-            key=f"download_final_results"
-        )
-    else:
-        st.info("Please complete all previous steps to see the final result.")
-
-
-# --- Navigation Buttons ---
-# Add a container for the buttons at the bottom
-button_container = st.container()
-
-with button_container:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        # Previous button logic
-        if st.button("Previous", key="prev_button", disabled=(st.session_state.step <= 1)):
-            st.session_state.step -= 1
-            st.rerun() # Rerun the app to display the previous step
-
-    with col2:
-        # Next button logic
-        # Disable 'Next' if current step's required data is not available
-        disable_next = False
-        if st.session_state.step == 1 and not st.session_state.loaded_dataframes:
-            disable_next = True
-        elif st.session_state.step == 2 and not st.session_state.get('confirmed_column_mappings', {}):
-            disable_next = True
-        elif st.session_state.step == 3 and st.session_state.merged_dataframe is None:
-             disable_next = True
-        elif st.session_state.step == 4 and st.session_state.standardized_dataframe is None:
-             disable_next = True
-        elif st.session_state.step == 5: # Already at the last step
-             disable_next = True
-
-
-        if st.button("Next", key="next_button", disabled=disable_next):
-            st.session_state.step += 1
-            st.rerun() # Rerun the app to display the next step
+# --- Step 5: Export Merged Data (Placeholder) ---
+st.sidebar.header("Step 5: Export Data")
+st.write("Export merged and cleaned data functionality will be implemented here.")
+# This section will be developed later
