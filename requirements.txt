@@ -1,1 +1,7 @@
+pandas
+fuzzywuzzy
+python-Levenshtein
+spacy
+pint
 streamlit
+pyngrok
