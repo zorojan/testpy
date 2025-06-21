@@ -1,9 +1,80 @@
 import streamlit as st
 import pandas as pd
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz # Import rapidfuzz
 import spacy
 import re
 from pint import UnitRegistry
+import os # Import os to write to file
+import google.generativeai as genai # Import genai
+import time # Import time for retries
+
+# Define the prompt for the AI model for header comparison (assuming it's already defined)
+# This prompt needs to be defined or imported here if not globally available
+header_comparison_prompt = """
+Compare the two provided column headers and assess their similarity for the purpose of merging data.
+Your task is to provide a similarity score as an integer between 0 and 100, where 100 means the headers are identical or highly similar in meaning and refer to the same type of data, and 0 means they are completely unrelated.
+
+Consider variations in:
+- Spelling (e.g., "colour" vs "color")
+- Case ("Product Name" vs "product name")
+- Spacing and special characters ("Product-ID" vs "Product ID")
+- Common abbreviations ("Prod. No." vs "Product Number")
+- Synonyms or closely related terms ("Customer Identifier" vs "Client ID")
+- Order of words if the meaning is the same ("Shipping Address" vs "Address, Shipping")
+
+The output should ONLY be the integer score, nothing else.
+
+Examples:
+
+Header 1: "Product Name"
+Header 2: "Product Name"
+Score: 100
+
+Header 1: "Customer ID"
+Header 2: "Client Identifier"
+Score: 95
+
+Header 1: "Shipping Address"
+Header 2: "Delivery Location"
+Score: 85
+
+Header 1: "Order Date"
+Header 2: "Purchase Timestamp"
+Score: 70
+
+Header 1: "Product Cost"
+Header 2: "Price (USD)"
+Score: 60
+
+Header 1: "Country"
+Header 2: "Region"
+Score: 50
+
+Header 1: "Email"
+Header 2: "Phone Number"
+Score: 10
+
+Header 1: "Order ID"
+Header 2: "Supplier Name"
+Score: 0
+
+Header 1: ""
+Header 2: "Product Name"
+Score: 0
+
+Header 1: "Item Number"
+Header 2: "Numéro d'article"
+Score: 50 # Partial match due to language difference
+
+Header 1: "QTY"
+Header 2: "Quantity Ordered"
+Score: 90
+
+Compare the following two headers:
+Header 1: {header1}
+Header 2: {header2}
+Score:
+"""
 
 # Load SpaCy model
 # Use session state to load the model once
@@ -17,9 +88,9 @@ if 'nlp' not in st.session_state:
 # Initialize Pint UnitRegistry (although not strictly used in header matching, keep for consistency if other matching methods are added later)
 ureg = UnitRegistry()
 
-# Fuzzy Matching Functions with improved scoring
-def fuzzy_match_strings_improved(text1, text2):
-    """Performs multiple fuzzy matching comparisons and returns the max score."""
+# RapidFuzz Matching Functions
+def fuzzy_match_strings_rapidfuzz(text1, text2):
+    """Performs fuzzy matching using rapidfuzz and returns the ratio score."""
     # Add checks for None or empty strings at the beginning
     str1 = str(text1).lower().strip() if text1 is not None else ""
     str2 = str(text2).lower().strip() if text2 is not None else ""
@@ -27,13 +98,10 @@ def fuzzy_match_strings_improved(text1, text2):
     if not str1 or not str2:
         return 0
 
-    score_ratio = fuzz.ratio(str1, str2)
-    score_partial_ratio = fuzz.partial_ratio(str1, str2)
-    score_token_sort = fuzz.token_sort_ratio(str1, str2)
-    score_token_set = fuzz.token_set_ratio(str1, str2)
+    # Using the simple ratio from rapidfuzz
+    score = fuzz.ratio(str1, str2)
 
-    # Return the maximum of relevant scores
-    return max(score_ratio, score_partial_ratio, score_token_sort, score_token_set)
+    return score
 
 # Semantic Matching Function
 def semantic_match_strings(text1, text2):
@@ -54,6 +122,67 @@ def semantic_match_strings(text1, text2):
          else:
               return 0.0 # Return 0 if dimensions mismatch or no vectors
     return 0.0 # Return 0 if docs are empty or no vectors
+
+# AI Matching Function using Google AI
+def ai_match_strings(text1, text2):
+    """
+    Uses Google AI API to compare two headers and return a similarity score (0-100).
+    Handles potential API errors and invalid responses.
+    """
+    str1 = str(text1).strip() if text1 is not None else ""
+    str2 = str(text2).strip() if text2 is not None else ""
+
+    if not str1 or not str2:
+        return 0 # Return 0 for empty strings
+
+    try:
+        # Instantiate the model
+        # Use a robust model like gemini-pro
+        model = genai.GenerativeModel('gemini-pro')
+
+        # Format the prompt with the input headers
+        prompt = header_comparison_prompt.format(header1=str1, header2=str2)
+
+        # Call the API
+        # Add a retry mechanism for potential transient errors
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(prompt)
+                # Process the response to extract the integer score
+                # Expecting only an integer in the response
+                score_text = response.text.strip()
+                score = int(score_text)
+
+                # Ensure the score is within the 0-100 range
+                score = max(0, min(100, score))
+                return score
+
+            except ValueError:
+                # Handle cases where the response is not a valid integer
+                print(f"Attempt {attempt + 1} failed: API response was not a valid integer: '{response.text}'")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt) # Exponential backoff
+                    continue
+                else:
+                    print("Max retries reached. Could not extract valid score.")
+                    return -1 # Indicate failure
+
+            except Exception as e:
+                 # Handle other potential API errors
+                 print(f"Attempt {attempt + 1} failed with API error: {e}")
+                 if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt) # Exponential backoff
+                    continue
+                 else:
+                    print("Max retries reached. API call failed.")
+                    return -1 # Indicate failure
+
+        return -1 # Return -1 if all retries fail
+
+    except Exception as e:
+        print(f"An error occurred during the AI matching process: {e}")
+        return -1 # Indicate failure outside of API call
 
 
 def perform_header_matching_and_grouping():
@@ -78,16 +207,19 @@ def perform_header_matching_and_grouping():
     st.subheader("Matching Strategy for Header Grouping")
     matching_strategy = st.radio(
         "Choose a matching strategy for grouping headers:",
-        ('Fuzzy Matching', 'Semantic Matching'),
+        ('Fuzzy Matching', 'Semantic Matching', 'AI Matching'), # Added AI Matching option
         key="header_grouping_strategy"
     )
 
     # Define threshold inputs based on strategy
-    threshold = 80 # Default for Fuzzy
+    threshold = 80 # Default for Fuzzy and AI
     if matching_strategy == 'Fuzzy Matching':
         threshold = st.slider("Match Threshold for Grouping (higher is stricter):", 0, 100, 80, key="grouping_fuzzy_threshold")
     elif matching_strategy == 'Semantic Matching':
         threshold = st.slider("Match Threshold for Grouping (higher is stricter):", 0.0, 1.0, 0.7, key="grouping_semantic_threshold", step=0.05)
+    elif matching_strategy == 'AI Matching': # Added threshold for AI Matching
+        threshold = st.slider("Match Threshold for Grouping (higher is stricter):", 0, 100, 80, key="grouping_ai_threshold")
+
 
     # Option to hide 100% matches
     hide_perfect_matches = st.checkbox("Hide 100% matches", value=True, key="hide_perfect_matches")
@@ -116,7 +248,7 @@ def perform_header_matching_and_grouping():
         match_func = None
         score_attribute = None # Attribute name for score in the matching results
         if matching_strategy == 'Fuzzy Matching':
-            match_func = lambda text1, text2: fuzzy_match_strings_improved(text1, text2)
+            match_func = lambda text1, text2: fuzzy_match_strings_rapidfuzz(text1, text2) # Use rapidfuzz function
             score_attribute = 'fuzzy_score'
         elif matching_strategy == 'Semantic Matching':
              if 'nlp' in st.session_state and st.session_state.nlp:
@@ -125,6 +257,9 @@ def perform_header_matching_and_grouping():
              else:
                  st.warning("SpaCy model not loaded. Cannot perform Semantic matching.")
                  match_func = None
+        elif matching_strategy == 'AI Matching': # Assigned AI matching function
+             match_func = lambda text1, text2: ai_match_strings(text1, text2)
+             score_attribute = 'ai_score'
 
 
         if match_func:
@@ -142,10 +277,10 @@ def perform_header_matching_and_grouping():
                             score = match_func(current_header_info['header'], compare_header_info['header'])
 
                             # Apply the threshold for grouping, considering hide_perfect_matches
-                            if score is not None:
+                            if score is not None and score != -1: # Check for valid score (not -1 indicating AI failure)
                                  score_passes_threshold = score >= threshold
                                  is_perfect_match = False
-                                 if matching_strategy == 'Fuzzy Matching' and score == 100:
+                                 if (matching_strategy == 'Fuzzy Matching' or matching_strategy == 'AI Matching') and score == 100:
                                       is_perfect_match = True
                                  elif matching_strategy == 'Semantic Matching' and score == 1.0:
                                       is_perfect_match = True
@@ -165,8 +300,8 @@ def perform_header_matching_and_grouping():
                          header_groups.append(current_group)
                     elif len(current_group) == 1 and hide_perfect_matches:
                          # If hide_perfect_matches is True, and a header didn't find a non-perfect match,
-                         # it remains a group of 1. We skip adding it if it's a perfect self-match.
-                         pass # Skip groups of size 1 when hiding perfect matches
+                         # it remains a group of 1. We skip groups of size 1 when hiding perfect matches
+                         pass
 
 
             # Store grouped headers in session state
@@ -191,9 +326,10 @@ def perform_header_matching_and_grouping():
                                 representative_header_for_scoring = group_name # Use the first header as representative for scoring
                                 for header in headers_from_source_in_group:
                                      score = match_func(representative_header_for_scoring, header)
-                                     if score is not None and score > best_score:
-                                          best_score = score
-                                          best_header = header
+                                     if score is not None and score != -1:
+                                          if score > best_score:
+                                               best_score = score
+                                               best_header = header
                                 # If a best header was found, set it as the default
                                 if best_header:
                                      initial_confirmed_mappings[group_name][file_name] = best_header
@@ -231,102 +367,66 @@ def perform_header_matching_and_grouping():
         # Display each group with selectboxes
         updated_confirmed_mappings = {} # Temporary dict to store selections from UI
         for group_index, group in enumerate(grouped_headers):
-            if not group: continue
+            if group:
+                # Use the first header in the group as the default group name for display
+                group_display_name = group[0]['header']
+                # Ensure the group name exists in confirmed_mappings if it's the first run
+                if group_display_name not in confirmed_mappings:
+                    confirmed_mappings[group_display_name] = {}
 
-            # Determine a representative name for the group (e.g., the first header in the group)
-            group_name = group[0]['header']
+                group_cols = st.columns(num_cols)
+                group_cols[0].write(f"**{group_display_name}**") # Display the group name
 
-            # Create columns for this group's row
-            group_cols = st.columns(num_cols)
+                all_headers_in_group = [item['header'] for item in group]
 
-            # Display group name
-            group_cols[0].write(f"**{group_name}**")
+                # For each source file, create a selectbox with headers from that file within this group
+                group_complete = True # Assume group is complete until proven otherwise
+                for i, file_name in enumerate(source_files):
+                    headers_from_this_source = [item['header'] for item in group if item['source'] == file_name]
+                    # Add an option for "None" if a file doesn't have a header in this group or if the user wants to exclude it
+                    options = ["-- Select Header --"] + headers_from_this_source
+                    # Determine the default selection
+                    current_selection = confirmed_mappings.get(group_display_name, {}).get(file_name, "-- Select Header --")
+                    if current_selection not in options:
+                         current_selection = "-- Select Header --" # Reset if the previously selected header is no longer an option
 
-            # For each source file, create a selectbox
-            current_group_mappings = {} # Store mappings for this specific group
-            source_files_in_group = list(set([item['source'] for item in group])) # Get unique source files in this group
-            for i, file_name in enumerate(source_files): # Iterate through ALL source files for consistent column layout
-                 # Only display selectbox if this source file has headers in this group
-                 if file_name in source_files_in_group:
-                      headers_from_source = [item['header'] for item in group if item['source'] == file_name]
+                    selected_header = group_cols[i+1].selectbox(
+                        f"Select for {file_name}",
+                        options=options,
+                        index=options.index(current_selection) if current_selection in options else 0,
+                        key=f"select_{group_index}_{file_name}" # Unique key for each selectbox
+                    )
 
-                      # Add an option for "Do not merge" or similar if no header from this source is in the group
-                      options = ["- Select Header -"] + headers_from_source
+                    # Store the selected mapping
+                    if group_display_name not in updated_confirmed_mappings:
+                         updated_confirmed_mappings[group_display_name] = {}
 
-                      # Determine the default selection based on confirmed_mappings or initial best match
-                      default_index = 0 # Default to the placeholder
-                      # Check if a mapping is already confirmed for this group and file
-                      if group_name in confirmed_mappings and file_name in confirmed_mappings[group_name]:
-                           selected_header_value = confirmed_mappings[group_name][file_name]
-                           if selected_header_value in options:
-                                default_index = options.index(selected_header_value)
-                           # else: default remains 0 (placeholder) if the previously selected header is somehow not in current options
-                      else:
-                           # If no confirmed mapping, use the initial best match determined after grouping
-                           # Find the best header from this file in this group based on initial scoring
-                           best_header = None
-                           best_score = -1
-                           representative_header_for_scoring = group_name # Use the first header as representative for scoring
-                           # Re-run the scoring logic to find the best header from this specific source file in this group
-                           if match_func: # Ensure match_func is available
-                                for header in headers_from_source:
-                                     score = match_func(representative_header_for_scoring, header)
-                                     if score is not None and score > best_score:
-                                          best_score = score
-                                          best_header = header
-                                if best_header and best_header in options:
-                                      default_index = options.index(best_header)
+                    if selected_header != "-- Select Header --":
+                         updated_confirmed_mappings[group_display_name][file_name] = selected_header
+                    else:
+                         # If "None" is selected, ensure the entry for this file is removed from confirmed mappings for this group
+                         if file_name in updated_confirmed_mappings[group_display_name]:
+                              del updated_confirmed_mappings[group_display_name][file_name]
+                         group_complete = False # Mark group as incomplete if any file is not mapped
 
-
-                      # Use a unique key for each selectbox
-                      selected_header = group_cols[i+1].selectbox(
-                          "Select header:",
-                          options,
-                          index=default_index, # Set default selection
-                          key=f"group_{group_index}_file_{file_name}_select"
-                      )
-
-                      # Store the selected header if it's not the placeholder
-                      if selected_header not in ["- Select Header -", "- No matching header in this file -"]:
-                           current_group_mappings[file_name] = selected_header
-                 else:
-                     # If the source file is not in this group, display an empty cell or placeholder
-                     group_cols[i+1].write("") # Or st.empty()
+                # Display completion status
+                if group_complete and updated_confirmed_mappings.get(group_display_name):
+                    group_cols[num_cols - 1].write("✅")
+                else:
+                     group_cols[num_cols - 1].write("❌")
 
 
-            # Update the confirmed mappings for this group
-            if group_name not in updated_confirmed_mappings:
-                 updated_confirmed_mappings[group_name] = {}
-            updated_confirmed_mappings[group_name].update(current_group_mappings)
-
-            # Display completion status
-            # Check if this specific group's mapping is complete based on updated_confirmed_mappings
-            is_group_complete_updated = True
-            # Check if a selection has been made for ALL source files that have headers in this group
-            for file_name in source_files_in_group:
-                 if group_name not in updated_confirmed_mappings or file_name not in updated_confirmed_mappings[group_name]:
-                      is_group_complete_updated = False
-                      break
-            group_cols[num_cols - 1].checkbox("Done", value=is_group_complete_updated, disabled=True, key=f"group_{group_index}_complete_checkbox")
-
-
-        # After iterating through all groups, update the session state with the new selections
+        # Update confirmed mappings in session state based on user selections
         st.session_state.confirmed_column_mappings = updated_confirmed_mappings
 
         st.markdown("---") # Separator
-
-        st.subheader("Confirmed Column Mappings Summary")
-        if confirmed_mappings: # Display the confirmed mappings based on the session state
-             # Display the confirmed mappings
-             confirmed_df = pd.DataFrame({
-                 'Consolidated Column': list(confirmed_mappings.keys()),
-                 'Source Mappings': [str(m) for m in confirmed_mappings.values()] # Display mappings as string for simplicity
-             })
-             st.dataframe(confirmed_df)
-             st.info("These mappings will be used in the Data Merging step.")
+        st.subheader("Confirmed Column Mappings")
+        # Display the current confirmed mappings for review
+        if st.session_state.confirmed_column_mappings:
+            st.json(st.session_state.confirmed_column_mappings) # Display as JSON for clarity
+            st.info("These are the mappings based on your selections above. They will be used in the next step.")
         else:
-             st.info("No headers have been selected for merging yet.")
+            st.info("No column mappings confirmed yet. Make selections above to confirm.")
 
-
-    # This function updates session state directly and returns None.
-    return None
+# Note: You will need to rerun the Streamlit app cell (cell bN5HEtVVTcOy) after
+# updating matching.py for the changes to take effect in the running app.
